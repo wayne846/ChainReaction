@@ -111,6 +111,14 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Rope|Physics", meta = (ClampMin = "0", ClampMax = "8"))
 	int32 ProjectionIterations = 2;
 
+	/**
+	 * Chaos joint mass conditioning: artificially narrows the mass ratio between joined bodies.
+	 * Off by default: it lets the rope push heavy attached objects as if they were light (e.g. dragging
+	 * a heavy crate off a shelf). Turn on only if a very light rope must hold a heavy load in mid-air.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Rope|Physics")
+	bool bUseMassConditioning = false;
+
 	// ---------------- Visual ----------------
 
 	/** Mesh deformed along each segment. Must be modelled along +Z (like /Engine/BasicShapes/Cylinder). */

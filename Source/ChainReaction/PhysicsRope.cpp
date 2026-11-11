@@ -332,7 +332,14 @@ UPhysicsConstraintComponent* APhysicsRope::MakeConstraint(const FVector& Locatio
 	}
 	const float Shock = CVarRopeShock.GetValueOnGameThread();
 	C->ConstraintInstance.SetShockPropagationParams(Shock > 0.f, FMath::Clamp(Shock, 0.f, 1.f));
-	C->ConstraintInstance.EnableMassConditioning();
+	if (bUseMassConditioning)
+	{
+		C->ConstraintInstance.EnableMassConditioning();
+	}
+	else
+	{
+		C->ConstraintInstance.DisableMassConditioning();
+	}
 
 	C->RegisterComponent();
 	// The joint frames are computed from the component's world transform inside SetConstrainedComponents.
