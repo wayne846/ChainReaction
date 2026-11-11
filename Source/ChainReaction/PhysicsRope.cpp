@@ -7,12 +7,25 @@
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "GameFramework/PlayerController.h"
+#include "HAL/IConsoleManager.h"
 #include "Materials/MaterialInterface.h"
 #include "PhysicsEngine/PhysicsConstraintComponent.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 
 DEFINE_LOG_CATEGORY_STATIC(LogPhysicsRope, Log, All);
+
+// Tuning / diagnostics switches (read when constraints are created at BeginPlay).
+static TAutoConsoleVariable<int32> CVarRopeProjection(TEXT("rope.Projection"), 0,
+	TEXT("Rope joint projection: 0 = off, 1 = engine default (linear alpha 1, 5 cm tolerance)."));
+static TAutoConsoleVariable<int32> CVarRopeParentTowardRoot(TEXT("rope.ParentTowardRoot"), 1,
+	TEXT("1 = constraint parent is the body closer to the held end (recommended), 0 = reversed."));
+static TAutoConsoleVariable<int32> CVarRopeAngularLimited(TEXT("rope.AngularLimited"), 1,
+	TEXT("1 = limit bend/twist between segments, 0 = free angular motion."));
+static TAutoConsoleVariable<float> CVarRopeShock(TEXT("rope.ShockPropagation"), 0.f,
+	TEXT("Shock propagation alpha on rope joints (0 = off)."));
+static TAutoConsoleVariable<int32> CVarRopeDebug(TEXT("rope.Debug"), 0,
+	TEXT("1 = log rope state (end position, max joint gap) every 0.25 s while playing."));
 
 APhysicsRope::APhysicsRope()
 {
@@ -224,6 +237,31 @@ void APhysicsRope::Tick(float DeltaSeconds)
 	Super::Tick(DeltaSeconds);
 	if (!bDebugInputBound) { TryBindDebugInput(); }
 	UpdateVisuals();
+
+	if (CVarRopeDebug.GetValueOnGameThread() != 0 && Segments.Num() > 1)
+	{
+		// Log 4x per second: end point, max gap across intact joints, total stretch.
+		const double Now = GetWorld()->GetTimeSeconds();
+		if (FMath::FloorToInt(Now * 4.0) != FMath::FloorToInt((Now - DeltaSeconds) * 4.0))
+		{
+			float MaxGap = 0.f, SumGap = 0.f;
+			for (int32 k = 1; k < Segments.Num(); ++k)
+			{
+				if (!IsJointIntact(k)) { continue; }
+				FVector S0, E0, S1, E1;
+				GetSegmentEnds(k - 1, S0, E0);
+				GetSegmentEnds(k, S1, E1);
+				const float Gap = FVector::Dist(E0, S1);
+				MaxGap = FMath::Max(MaxGap, Gap);
+				SumGap += Gap;
+			}
+			const FVector EndLoc = GetJointLocation(Segments.Num());
+			const FVector StartLoc = GetJointLocation(0);
+			const float EndSpeed = Segments.Last()->GetPhysicsLinearVelocity().Size();
+			UE_LOG(LogPhysicsRope, Log, TEXT("RopeDbg t=%.2f start=(%.1f,%.1f,%.1f) end=(%.1f,%.1f,%.1f) endSpeed=%.1f maxGap=%.2f sumGap=%.2f"),
+				Now, StartLoc.X, StartLoc.Y, StartLoc.Z, EndLoc.X, EndLoc.Y, EndLoc.Z, EndSpeed, MaxGap, SumGap);
+		}
+	}
 }
 
 UPrimitiveComponent* APhysicsRope::ResolveAnchorComponent(const FRopeAnchor& Anchor) const
@@ -254,7 +292,7 @@ UPrimitiveComponent* APhysicsRope::ResolveAnchorComponent(const FRopeAnchor& Anc
 	return Prims.Num() > 0 ? Prims[0] : nullptr;
 }
 
-UPhysicsConstraintComponent* APhysicsRope::MakeConstraint(const FVector& Location, const FVector& RopeDir, UPrimitiveComponent* A, UPrimitiveComponent* B, FName BoneB, bool bIsAnchor)
+UPhysicsConstraintComponent* APhysicsRope::MakeConstraint(const FVector& Location, const FVector& RopeDir, UPrimitiveComponent* Child, FName ChildBone, UPrimitiveComponent* Parent, FName ParentBone, bool bIsAnchor)
 {
 	UPhysicsConstraintComponent* C = NewObject<UPhysicsConstraintComponent>(this);
 	C->CreationMethod = EComponentCreationMethod::Instance;
@@ -269,7 +307,7 @@ UPhysicsConstraintComponent* APhysicsRope::MakeConstraint(const FVector& Locatio
 	C->SetLinearYLimit(LCM_Locked, 0.f);
 	C->SetLinearZLimit(LCM_Locked, 0.f);
 
-	if (bIsAnchor)
+	if (bIsAnchor || CVarRopeAngularLimited.GetValueOnGameThread() == 0)
 	{
 		// A hanging point lets the rope swing and twist freely.
 		C->SetAngularSwing1Limit(ACM_Free, 0.f);
@@ -284,13 +322,30 @@ UPhysicsConstraintComponent* APhysicsRope::MakeConstraint(const FVector& Locatio
 	}
 
 	C->SetDisableCollision(true);
-	// Projection removes residual joint separation that would otherwise show up as stretch/jitter
-	// when a heavy object hangs from light segments. Mass conditioning helps the solver with large mass ratios.
-	C->ConstraintInstance.SetProjectionParams(true, 0.8f, 0.8f, 1.0f, 10.0f);
+	if (CVarRopeProjection.GetValueOnGameThread() == 1)
+	{
+		C->ConstraintInstance.SetProjectionParams(true, 1.0f, 0.0f, 5.0f, 180.0f);
+	}
+	else
+	{
+		C->ConstraintInstance.DisableProjection();
+	}
+	const float Shock = CVarRopeShock.GetValueOnGameThread();
+	C->ConstraintInstance.SetShockPropagationParams(Shock > 0.f, FMath::Clamp(Shock, 0.f, 1.f));
 	C->ConstraintInstance.EnableMassConditioning();
 
 	C->RegisterComponent();
-	C->SetConstrainedComponents(A, NAME_None, B, BoneB);
+	// The joint frames are computed from the component's world transform inside SetConstrainedComponents.
+	// Set it again now that the component is registered so ComponentToWorld is guaranteed current;
+	// otherwise every joint can end up at the actor origin and the rope collapses onto one point.
+	const FRotator JointRot = FRotationMatrix::MakeFromX(RopeDir.IsNearlyZero() ? FVector::DownVector : RopeDir).Rotator();
+	C->SetWorldLocationAndRotation(Location, JointRot);
+	C->UpdateComponentToWorld();
+	if (!C->GetComponentLocation().Equals(Location, 0.1f))
+	{
+		UE_LOG(LogPhysicsRope, Warning, TEXT("%s: joint placed at %s, expected %s"), *GetName(), *C->GetComponentLocation().ToString(), *Location.ToString());
+	}
+	C->SetConstrainedComponents(Child, ChildBone, Parent, ParentBone);
 	return C;
 }
 
@@ -313,25 +368,38 @@ void APhysicsRope::CreateConstraints()
 		GetSegmentEnds(i, Starts[i], Ends[i]);
 	}
 
+	// FConstraintInstance convention: Component1 = child, Component2 = parent, and projection
+	// treats the parent as infinitely heavy. The parent must therefore always be the body closer
+	// to the held end of the rope; the reverse pumps energy up the chain (growing swing).
+	// The rope is rooted at the start unless only the end is held.
+	bool bRootAtEnd = StartAnchor.Mode == ERopeAnchorMode::Free && EndAnchor.Mode != ERopeAnchorMode::Free;
+	if (CVarRopeParentTowardRoot.GetValueOnGameThread() == 0) { bRootAtEnd = !bRootAtEnd; } // diagnostics only
+
 	// Between segments.
 	for (int32 k = 1; k < N; ++k)
 	{
 		const FVector Loc = (Ends[k - 1] + Starts[k]) * 0.5f;
 		const FVector Dir = (Segments[k]->GetComponentLocation() - Segments[k - 1]->GetComponentLocation()).GetSafeNormal();
-		Joints[k] = MakeConstraint(Loc, Dir, Segments[k - 1], Segments[k], NAME_None, false);
+		UCapsuleComponent* Child  = bRootAtEnd ? Segments[k - 1] : Segments[k];
+		UCapsuleComponent* Parent = bRootAtEnd ? Segments[k] : Segments[k - 1];
+		Joints[k] = MakeConstraint(Loc, Dir, Child, NAME_None, Parent, NAME_None, false);
 	}
 
-	// Anchors.
-	auto MakeAnchor = [this](const FRopeAnchor& Anchor, UCapsuleComponent* Seg, const FVector& Loc, const FVector& Dir) -> UPhysicsConstraintComponent*
+	// Anchors. On the root end the anchor (world / target) is the parent of the rope;
+	// on the other end the attached target hangs from the rope as its child.
+	auto MakeAnchor = [this](const FRopeAnchor& Anchor, UCapsuleComponent* Seg, const FVector& Loc, const FVector& Dir, bool bIsRootEnd) -> UPhysicsConstraintComponent*
 	{
 		switch (Anchor.Mode)
 		{
 		case ERopeAnchorMode::WorldPoint:
-			return MakeConstraint(Loc, Dir, Seg, nullptr, NAME_None, true);
+			// Null component = the world, which is always the parent.
+			return MakeConstraint(Loc, Dir, Seg, NAME_None, nullptr, NAME_None, true);
 		case ERopeAnchorMode::AttachToActor:
 			if (UPrimitiveComponent* Target = ResolveAnchorComponent(Anchor))
 			{
-				return MakeConstraint(Loc, Dir, Seg, Target, Anchor.BoneName, true);
+				return bIsRootEnd
+					? MakeConstraint(Loc, Dir, Seg, NAME_None, Target, Anchor.BoneName, true)
+					: MakeConstraint(Loc, Dir, Target, Anchor.BoneName, Seg, NAME_None, true);
 			}
 			UE_LOG(LogPhysicsRope, Warning, TEXT("%s: AttachToActor anchor has no valid target; end left free."), *GetName());
 			return nullptr;
@@ -342,8 +410,8 @@ void APhysicsRope::CreateConstraints()
 
 	const FVector StartDir = (Ends[0] - Starts[0]).GetSafeNormal();
 	const FVector EndDir = (Ends[N - 1] - Starts[N - 1]).GetSafeNormal();
-	Joints[0] = MakeAnchor(StartAnchor, Segments[0], Starts[0], StartDir);
-	Joints[N] = MakeAnchor(EndAnchor, Segments[N - 1], Ends[N - 1], EndDir);
+	Joints[0] = MakeAnchor(StartAnchor, Segments[0], Starts[0], StartDir, !bRootAtEnd);
+	Joints[N] = MakeAnchor(EndAnchor, Segments[N - 1], Ends[N - 1], EndDir, bRootAtEnd);
 }
 
 // ---------------------------------------------------------------------------
@@ -499,5 +567,6 @@ void APhysicsRope::TryBindDebugInput()
 	{
 		InputComponent->BindKey(DebugCutKey, IE_Pressed, this, &APhysicsRope::HandleDebugCut);
 		bDebugInputBound = true;
+		UE_LOG(LogPhysicsRope, Log, TEXT("%s: debug cut key '%s' bound (player controller %s)"), *GetName(), *DebugCutKey.ToString(), *PC->GetName());
 	}
 }

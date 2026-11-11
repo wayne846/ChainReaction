@@ -8,8 +8,11 @@
 
 ARopeTestWeight::ARopeTestWeight()
 {
+	Root = CreateDefaultSubobject<USceneComponent>(TEXT("Root"));
+	RootComponent = Root;
+
 	Mesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("Mesh"));
-	RootComponent = Mesh;
+	Mesh->SetupAttachment(Root);
 
 	static ConstructorHelpers::FObjectFinder<UStaticMesh> CubeMesh(TEXT("/Engine/BasicShapes/Cube.Cube"));
 	if (CubeMesh.Succeeded())
@@ -36,11 +39,13 @@ ARopeTestWeight::ARopeTestWeight()
 void ARopeTestWeight::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
-	Mesh->SetWorldScale3D(FVector(Size / 100.f));
+	// Basic cube is 100 cm. Scale the child mesh, never the root (the actor transform owns the root).
+	Mesh->SetRelativeScale3D(FVector(Size / 100.f));
 	Mesh->SetMassOverrideInKg(NAME_None, MassKg, true);
 }
 
 FVector ARopeTestWeight::GetTopAttachPoint() const
 {
-	return GetActorLocation() + GetActorUpVector() * (Size * 0.5f);
+	// Mesh detaches from Root once it simulates, so follow the mesh, not the actor.
+	return Mesh->GetComponentLocation() + Mesh->GetUpVector() * (Size * 0.5f);
 }

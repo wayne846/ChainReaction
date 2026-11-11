@@ -194,7 +194,8 @@ private:
 	void DestroyRope();
 	void CreateConstraints();
 	void ComputeInitialPoints(TArray<FVector>& OutPoints) const;
-	UPhysicsConstraintComponent* MakeConstraint(const FVector& Location, const FVector& RopeDir, UPrimitiveComponent* A, UPrimitiveComponent* B, FName BoneB, bool bIsAnchor);
+	/** Child = Component1, Parent = Component2 (FConstraintInstance convention). Parent may be null (= world). */
+	UPhysicsConstraintComponent* MakeConstraint(const FVector& Location, const FVector& RopeDir, UPrimitiveComponent* Child, FName ChildBone, UPrimitiveComponent* Parent, FName ParentBone, bool bIsAnchor);
 	UPrimitiveComponent* ResolveAnchorComponent(const FRopeAnchor& Anchor) const;
 	void UpdateVisuals();
 	void GetSegmentEnds(int32 Index, FVector& OutStart, FVector& OutEnd) const;

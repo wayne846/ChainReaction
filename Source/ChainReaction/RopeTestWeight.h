@@ -24,6 +24,11 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Weight", meta = (ClampMin = "1.0"))
 	float Size = 30.f;
 
+	/** Plain root so the actor's own scale never changes the cube size. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weight")
+	TObjectPtr<USceneComponent> Root;
+
+	/** The physics body. Sized by Size via its relative scale. */
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "Weight")
 	TObjectPtr<UStaticMeshComponent> Mesh;
 
