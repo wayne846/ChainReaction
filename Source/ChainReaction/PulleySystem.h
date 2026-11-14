@@ -163,6 +163,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pulley|Visual")
 	TObjectPtr<UMaterialInterface> WheelMaterial;
 
+	/** Material for the cross spokes. Empty = use WheelMaterial. */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pulley|Visual")
+	TObjectPtr<UMaterialInterface> SpokeMaterial;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = "Pulley|Visual", meta = (ClampMin = "0.5"))
 	float WheelWidth = 4.f;
 

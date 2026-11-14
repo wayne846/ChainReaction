@@ -592,14 +592,14 @@ void APulleySystem::BuildComponents()
 		Pivot->RegisterComponent();
 		WheelPivots[i] = Pivot;
 
-		auto AddPart = [&](UStaticMesh* Mesh, const FVector& Scale)
+		auto AddPart = [&](UStaticMesh* Mesh, const FVector& Scale, UMaterialInterface* Mat)
 		{
 			UStaticMeshComponent* Part = NewObject<UStaticMeshComponent>(this);
 			Part->CreationMethod = Method;
 			Part->SetMobility(EComponentMobility::Movable);
 			Part->SetupAttachment(Pivot);
 			Part->SetStaticMesh(Mesh);
-			if (WheelMaterial) { Part->SetMaterial(0, WheelMaterial); }
+			if (Mat) { Part->SetMaterial(0, Mat); }
 			Part->SetRelativeScale3D(Scale);
 			Part->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 			Part->SetCanEverAffectNavigation(false);
@@ -608,10 +608,11 @@ void APulleySystem::BuildComponents()
 		};
 		const float D = PulleyRadius * 2.f / 100.f;
 		const float W = WheelWidth / 100.f;
-		AddPart(WheelMesh, FVector(D, D, W));
+		UMaterialInterface* SpokeMat = SpokeMaterial ? SpokeMaterial.Get() : WheelMaterial.Get();
+		AddPart(WheelMesh, FVector(D, D, W), WheelMaterial);
 		// Spokes stick out of both faces so they stay visible.
-		AddPart(SpokeMesh, FVector(D * 0.95f, D * 0.12f, W * 1.6f));
-		AddPart(SpokeMesh, FVector(D * 0.12f, D * 0.95f, W * 1.6f));
+		AddPart(SpokeMesh, FVector(D * 0.95f, D * 0.12f, W * 1.6f), SpokeMat);
+		AddPart(SpokeMesh, FVector(D * 0.12f, D * 0.95f, W * 1.6f), SpokeMat);
 	}
 }
 
